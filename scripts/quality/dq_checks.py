@@ -187,7 +187,7 @@ class DataQualityChecker:
                 'name': 'Negative Amounts',
                 'query': """
                 SELECT COUNT(*) as negative_count
-                FROM warehouse.fact_orders
+                FROM warehouse.fact_sales
                 WHERE net_amount < 0;
                 """,
                 'severity': 'HIGH',
@@ -197,7 +197,7 @@ class DataQualityChecker:
                 'name': 'Future Order Dates',
                 'query': f"""
                 SELECT COUNT(*) as future_count
-                FROM warehouse.fact_orders fo
+                FROM warehouse.fact_sales fo
                 JOIN warehouse.dim_date dd ON fo.order_date_key = dd.date_key
                 WHERE dd.full_date > CURRENT_DATE;
                 """,
@@ -208,7 +208,7 @@ class DataQualityChecker:
                 'name': 'Zero Quantity Orders',
                 'query': """
                 SELECT COUNT(*) as zero_quantity_count
-                FROM warehouse.fact_orders
+                FROM warehouse.fact_sales
                 WHERE quantity <= 0;
                 """,
                 'severity': 'HIGH',
@@ -239,7 +239,7 @@ class DataQualityChecker:
         # Check if warehouse tables exist
         warehouse_tables = [
             'dim_customer', 'dim_product', 'dim_merchant', 'dim_staff',
-            'dim_campaign', 'dim_date', 'fact_sales', 'fact_operations', 'fact_campaign_performance'
+            'dim_campaign', 'dim_date', 'fact_sales'
         ]
 
         for table in warehouse_tables:
@@ -277,9 +277,8 @@ class DataQualityChecker:
             ('warehouse.fact_sales', 'product_key', 'warehouse.dim_product', 'product_key'),
             ('warehouse.fact_sales', 'merchant_key', 'warehouse.dim_merchant', 'merchant_key'),
             ('warehouse.fact_sales', 'staff_key', 'warehouse.dim_staff', 'staff_key'),
-            ('warehouse.fact_sales', 'order_date_key', 'warehouse.dim_date', 'date_key'),
-            ('warehouse.fact_campaign_performance', 'campaign_key', 'warehouse.dim_campaign', 'campaign_key'),
-            ('warehouse.fact_operations', 'date_key', 'warehouse.dim_date', 'date_key')
+            ('warehouse.fact_sales', 'campaign_key', 'warehouse.dim_campaign', 'campaign_key'),
+            ('warehouse.fact_sales', 'order_date_key', 'warehouse.dim_date', 'date_key')
         ]
 
         for fact_table, fact_key, dim_table, dim_key in fk_checks:

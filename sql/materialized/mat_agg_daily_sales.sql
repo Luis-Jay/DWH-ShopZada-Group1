@@ -15,14 +15,14 @@ SELECT
     SUM(fo.quantity) as daily_quantity_sold,
     SUM(fo.discount_amount) as daily_discounts,
     CASE
-        WHEN dd.day_of_week = 1 THEN 'Weekend'
+        WHEN dd.day_of_week IN (0, 6) THEN 'Weekend'
         ELSE 'Weekday'
     END as day_type,
     CASE
         WHEN dd.is_holiday THEN 'Holiday'
         ELSE 'Regular'
     END as date_category
-FROM warehouse.fact_orders fo
+FROM warehouse.fact_sales fo
 JOIN warehouse.dim_date dd ON fo.order_date_key = dd.date_key
 GROUP BY
     dd.full_date, dd.year, dd.month, dd.month_name, dd.quarter,

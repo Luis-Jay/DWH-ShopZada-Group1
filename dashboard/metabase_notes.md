@@ -56,7 +56,8 @@ SELECT
     ROUND(100.0 * SUM(CASE WHEN fcp.availed THEN 1 ELSE 0 END) / COUNT(*), 2) as avail_rate
 FROM warehouse.fact_campaign_performance fcp
 JOIN warehouse.dim_campaign c ON fcp.campaign_key = c.campaign_key
-LEFT JOIN warehouse.fact_orders fs ON fcp.order_id = fs.order_id
+LEFT JOIN warehouse.fact_sales fs ON fcp.order_id = fs.order_id
+WHERE c.is_current = true
 GROUP BY c.campaign_name
 ORDER BY total_revenue DESC
 LIMIT 10;
@@ -82,7 +83,7 @@ SELECT
     COUNT(DISTINCT fo.customer_key) as customer_count,
     ROUND(AVG(fo.net_amount), 2) as avg_order_value,
     ROUND(100.0 * SUM(fo.net_amount) / SUM(SUM(fo.net_amount)) OVER (), 2) as revenue_percentage
-FROM warehouse.fact_orders fo
+FROM warehouse.fact_sales fo
 JOIN warehouse.dim_customer dc ON fo.customer_key = dc.customer_key
 WHERE dc.is_current = true
 GROUP BY dc.job_level

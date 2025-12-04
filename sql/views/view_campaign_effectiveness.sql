@@ -1,5 +1,5 @@
-CREATE OR REPLACE VIEW presentation.campaign_effectiveness AS
-SELECT 
+CREATE OR REPLACE VIEW presentation.view_campaign_effectiveness AS
+SELECT
     c.campaign_name,
     COUNT(DISTINCT fcp.order_id) as total_orders,
     SUM(CASE WHEN fcp.availed THEN 1 ELSE 0 END) as campaigns_availed,
@@ -8,5 +8,6 @@ SELECT
 FROM warehouse.fact_campaign_performance fcp
 JOIN warehouse.dim_campaign c ON fcp.campaign_key = c.campaign_key
 LEFT JOIN warehouse.fact_sales fs ON fcp.order_id = fs.order_id
+WHERE c.is_current = true
 GROUP BY c.campaign_name
 ORDER BY total_revenue DESC;

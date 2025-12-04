@@ -4,10 +4,15 @@ SELECT DISTINCT
     product_name,
     product_type,
     price
-FROM staging.business_products
+FROM staging.staging_business_products
+WHERE product_id IS NOT NULL
 ON CONFLICT (product_id) DO UPDATE SET
     product_name = EXCLUDED.product_name,
     product_type = EXCLUDED.product_type,
     price = EXCLUDED.price,
     effective_date = CURRENT_TIMESTAMP,
     is_current = TRUE;
+
+-- Log results
+SELECT 'Dim product loaded: ' || COUNT(*) || ' records' as message
+FROM warehouse.dim_product;

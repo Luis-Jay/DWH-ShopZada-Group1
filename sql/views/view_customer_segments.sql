@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW presentation.customer_segments AS
+CREATE OR REPLACE VIEW presentation.view_customer_segments AS
 SELECT
     dc.job_level,
     COUNT(DISTINCT fo.customer_key) as customer_count,
@@ -8,7 +8,7 @@ SELECT
     ROUND(AVG(fo.quantity), 2) as avg_quantity_per_order,
     ROUND(100.0 * SUM(fo.net_amount) / SUM(SUM(fo.net_amount)) OVER (), 2) as revenue_percentage,
     ROUND(100.0 * COUNT(DISTINCT fo.customer_key) / SUM(COUNT(DISTINCT fo.customer_key)) OVER (), 2) as customer_percentage
-FROM warehouse.fact_orders fo
+FROM warehouse.fact_sales fo
 JOIN warehouse.dim_customer dc ON fo.customer_key = dc.customer_key
 WHERE dc.is_current = true
 GROUP BY dc.job_level

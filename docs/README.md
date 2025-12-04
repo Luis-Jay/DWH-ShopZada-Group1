@@ -1,20 +1,28 @@
 # ShopZada Data Warehouse Project
 
 ## Overview
-This project implements a comprehensive Data Warehouse solution for ShopZada, a global e-commerce company, using a Kimball star schema methodology. The solution integrates fragmented data from Business, Customer Management, Enterprise, Marketing, and Operations departments into a unified analytical platform.
+This project implements a comprehensive Data Warehouse solution for ShopZada, a global e-commerce company, using a Kimball star schema methodology. The solution integrates heterogeneous datasets from Business, Customer Management, Enterprise, Marketing, and Operations departments into a unified analytical platform.
+
+**Key Features:**
+- **Heterogeneous Data Sources**: Handles Excel, CSV, Parquet, Pickle, JSON, and HTML files
+- **Automated ETL Pipeline**: Apache Airflow orchestrates the entire data workflow
+- **Data Quality Assurance**: Comprehensive validation and monitoring
+- **BI-Ready Presentation Layer**: Optimized views and materialized aggregates
+- **Containerized Infrastructure**: Complete Docker setup for reproducible environments
 
 ## Architecture
 The DWH follows a three-layer architecture:
-- **Staging Layer**: Raw data ingestion with minimal transformation
-- **Warehouse Layer**: Kimball star schema with dimensions and facts
-- **Presentation Layer**: Analytical views and aggregates for BI consumption
+- **Staging Layer**: Raw data ingestion from heterogeneous sources with minimal transformation
+- **Warehouse Layer**: Kimball star schema with conformed dimensions and facts
+- **Presentation Layer**: Analytical views, materialized aggregates, and BI-ready structures
 
 ## Technology Stack
 - **Database**: PostgreSQL 15 (containerized)
 - **Orchestration**: Apache Airflow 2.7.3
 - **BI Tool**: Metabase (latest)
-- **Ingestion**: Python (pandas, SQLAlchemy)
+- **Ingestion**: Python (pandas, SQLAlchemy) with multi-format support
 - **Containerization**: Docker Compose
+- **Data Quality**: Custom Python validation framework
 
 ## Quick Start
 
@@ -26,13 +34,13 @@ The DWH follows a three-layer architecture:
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/Luis-Jay/DWH-ShopZada-Group1.git
    cd dwh_finalproject_3CSD_group1
    ```
 
 2. **Start the infrastructure**
    ```bash
-   docker-compose -f infra/docker-compose.yml up -d
+   docker-compose -f infra/docker-compose.yml up --build -d
    ```
 
 3. **Verify services are running**
@@ -40,28 +48,36 @@ The DWH follows a three-layer architecture:
    docker-compose ps
    ```
    Expected output:
-   - Postgres: http://localhost:5432
-   - Airflow: http://localhost:8080 (admin/admin)
-   - Metabase: http://localhost:3000
+   - Postgres: healthy (port 5432)
+   - Airflow: healthy (http://localhost:8080, admin/admin)
+   - Metabase: running (http://localhost:3000)
 
-4. **Load sample data**
-   Place CSV files in the `sql/data/raw/` directory:
-   - `business.csv`
-   - `customer.csv`
-   - `enterprise.csv`
-   - `transactional_data.csv`
-   - `campaign_data.csv`
-   - `operations.csv`
+4. **Data Sources**
+   Raw data files are pre-loaded in `Project Dataset/` directory with the following structure:
+   ```
+   Project Dataset/
+   ├── Business Department/ (Excel)
+   ├── Customer Management Department/ (Pickle, JSON, CSV)
+   ├── Enterprise Department/ (HTML, Parquet, CSV)
+   ├── Marketing Department/ (CSV)
+   └── Operations Department/ (CSV, Parquet, JSON, HTML, Excel)
+   ```
 
 5. **Run the ETL pipeline**
-   - Access Airflow UI at http://localhost:8080
-   - Enable the `shopzada_dwh_pipeline` DAG
-   - Trigger manual run or wait for scheduled execution
+   - Access Airflow UI at http://localhost:8080 (username: admin, password: admin)
+   - Enable the `shopzada_dwh_etl_pipeline_v2` DAG
+   - Trigger manual run or wait for scheduled execution (daily at 06:00)
 
 6. **Access BI Dashboard**
    - Open Metabase at http://localhost:3000
-   - Connect to Postgres database (host: postgres, db: shopzada_dwh)
-   - Create dashboard with the provided SQL queries
+   - First-time setup: Create admin account
+   - Add Postgres database connection:
+     - Host: postgres
+     - Database: shopzada_dwh
+     - User: shopzada
+     - Password: shopzada123
+   - Explore available views: view_customer_segments, view_campaign_effectiveness, view_merchant_performance
+   - Use materialized view: mat_agg_daily_sales for time-series analysis
 
 ## Project Structure
 ```
