@@ -1,351 +1,230 @@
 """
-ShopZada Data Warehouse ETL Pipeline (Fixed)
+ShopZada Data Warehouse ETL Pipeline (v3 - Refactored and Fixed)
 
-Key fixes:
-- Fixed FileSensor orchestration to properly gate pipeline continuation
-- Removed empty fs_conn_id parameter
-- Simplified failure handling with better trigger rules
-- Added proper ALL_DONE checks where needed
-- Improved file sensor logic
+This version corrects Python import errors that cause DAG parsing failures in modularized Airflow setups.
+
+Key Fix:
+- Simplified Python Path: Uses a single, explicit `sys.path.insert(0, '/opt/airflow/scripts')`
+  which directly corresponds to the volume mount defined in `docker-compose.yml`. This removes
+  fragile relative path calculations (`os.path.join`, `__file__`) that can fail during parsing.
 """
-
+import sys
+import os
 from datetime import datetime, timedelta
 import logging
-import os
 
-from airflow import DAG
+# [FIX] Correctly and robustly add the scripts directory to Python's path.
+# This must be at the top, before attempting to import any custom modules.
+# The path '/opt/airflow/scripts' is determined by the `volumes` section in the
+# docker-compose.yml for the Airflow scheduler and webserver.
+sys.path.insert(0, os.path.abspath('/opt/airflow/scripts'))
+
+from airflow.decorators import dag
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
-from airflow.hooks.base import BaseHook
+from airflow.models import Variable
+from airflow.sensors.filesystem import FileSensor
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 
+# --- Custom Module Imports ---
+# These imports will now work correctly because of the sys.path modification above.
+# If these modules have their own dependencies, they must be installed via requirements.txt.
 try:
-    from airflow.providers.postgres.operators.postgres import PostgresOperator
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
-except Exception:
-    from airflow.operators.postgres_operator import PostgresOperator
-    from airflow.hooks.postgres_hook import PostgresHook
+    from validation.environment_checker import validate_environment
+    from ingestion.ingestion_runner import run_data_ingestion
+    from quality.dq_runner import run_data_quality_checks
+    from metrics.collector import collect_pipeline_metrics
+    from cleanup.cleanup_handler import cleanup_on_failure
+    from notifications.success_notifier import send_success_notification
+    from notifications.failure_notifier import send_failure_notification
+except ImportError as e:
+    # If imports fail, log a critical error to the Airflow scheduler logs
+    # to make debugging easier.
+    logging.critical(f"DAG Import Error: {e}. Check if '/opt/airflow/scripts' exists and is populated.")
+    # Re-raise the error to ensure the DAG is marked as broken in the UI
+    raise
 
-import sys
-sys.path.append('/opt/airflow/scripts')
+# --- DAG Configuration ---
 
-try:
-    from ingest.ingest_to_postgres import ShopZadaIngestion
-except Exception:
-    ShopZadaIngestion = None
+# Use Airflow Variables for configuration with sensible defaults for local dev
+POSTGRES_CONN_ID = Variable.get("shopzada_pg_conn", default_var="postgres_default")
+DATA_DIR = Variable.get("shopzada_data_dir", default_var="/opt/airflow/sql")
+STAGING_FILE_PATH = Variable.get("shopzada_staging_path", default_var="/opt/airflow/data/ready")
 
-logger = logging.getLogger(__name__)
-
-default_args = {
+DEFAULT_ARGS = {
     'owner': 'shopzada_data_team',
     'depends_on_past': False,
     'start_date': datetime(2024, 1, 1),
     'email': ['data-team@shopzada.com'],
     'email_on_failure': True,
     'email_on_retry': False,
-    'retries': 5,
-    'retry_delay': timedelta(minutes=10),
-    'execution_timeout': timedelta(hours=2),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-DATA_DIR = '/opt/airflow/sql'
-POSTGRES_CONN_ID = os.getenv('SHOPZADA_PG_CONN', 'postgres_default')
-
-with DAG(
-    dag_id='shopzada_dwh_etl_pipeline_v2',
-    default_args=default_args,
-    description='Improved ETL pipeline for ShopZada Data Warehouse',
-    schedule_interval='0 6 * * *',  # daily at 06:00
-    tags=['shopzada', 'dwh', 'etl', 'daily'],
+@dag(
+    dag_id='shopzada_dwh_etl_pipeline_v3_fixed',
+    default_args=DEFAULT_ARGS,
+    description='Production ETL pipeline for ShopZada Data Warehouse (Fixed Imports)',
+    schedule_interval='0 6 * * *',
+    tags=['shopzada', 'dwh', 'etl', 'production'],
     catchup=False,
     max_active_runs=1,
     dagrun_timeout=timedelta(hours=3),
-    is_paused_upon_creation=False,  # Ensure DAG is not paused by default
-) as dag:
+    template_searchpath=['/opt/airflow/sql', '/opt/airflow/sql/ddl', '/opt/airflow/scripts'],
+)
+def shopzada_pipeline():
+    """
+    ### ShopZada Data Warehouse ETL Pipeline
+    This DAG orchestrates the entire ETL process for the ShopZada DWH.
+    It validates the environment, ingests data, runs transformations,
+    checks data quality, and handles success/failure notifications.
+    """
+    
+    # 1. Control and Validation Tasks
+    start_pipeline = EmptyOperator(task_id='start')
 
-    # -------------------------
-    # Control tasks
-    # -------------------------
-    start_pipeline = EmptyOperator(task_id='start_pipeline')
-
-    end_pipeline = EmptyOperator(
-        task_id='end_pipeline',
-        trigger_rule=TriggerRule.NONE_FAILED
-    )
-
-    # -------------------------
-    # 1. ENVIRONMENT VALIDATION
-    # -------------------------
-    def _validate_environment(**context):
-        """Validate DB connectivity and data directory."""
-        logger.info("Validating pipeline environment...")
-
-        try:
-            pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-            conn = pg_hook.get_conn()
-            conn.close()
-            logger.info("✓ Database connection successful")
-        except Exception as e:
-            logger.exception("Database connection failed: %s", e)
-            return False
-
-        if not os.path.isdir(DATA_DIR):
-            logger.warning("Data directory %s does not exist; creating it", DATA_DIR)
-            try:
-                os.makedirs(DATA_DIR, exist_ok=True)
-            except Exception as e:
-                logger.exception("Could not create data directory: %s", e)
-                return False
-
-        logger.info("Environment validation completed")
-        return True
-
-    validate_env_task = ShortCircuitOperator(
+    validate_env = ShortCircuitOperator(
         task_id='validate_environment',
-        python_callable=_validate_environment,
-        provide_context=True
+        python_callable=validate_environment,
+        op_kwargs={'postgres_conn_id': POSTGRES_CONN_ID, 'data_dir': DATA_DIR, 'staging_file_path': STAGING_FILE_PATH},
     )
 
+    wait_for_data_files = FileSensor(
+        task_id='wait_for_source_files',
+        filepath=STAGING_FILE_PATH,
+        poke_interval=60,
+        timeout=600,
+        mode='poke',
+    )
 
+    # 2. Schema and Staging Setup
+    init_schemas = PostgresOperator(
+        task_id='initialize_schemas',
+        postgres_conn_id=POSTGRES_CONN_ID,
+        sql='/opt/airflow/sql/01_create_schemas.sql',
+    )
 
-    # -------------------------
-    # 2. CREATE STAGING TABLES
-    # ------------------------- (added staging table creation)
-    create_staging_tables_task = PostgresOperator(
+    create_extensions = PostgresOperator(
+        task_id='create_extensions',
+        postgres_conn_id=POSTGRES_CONN_ID,
+        sql='/opt/airflow/sql/02_create_extensions.sql',
+    )
+
+    create_staging_tables = PostgresOperator(
         task_id='create_staging_tables',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/sql/ddl/staging_schema.sql',
     )
 
-    # -------------------------
-    # 2. SCHEMA INITIALIZATION
-    # -------------------------
-    init_schemas_task = PostgresOperator(
-        task_id='initialize_schemas',
-        postgres_conn_id=POSTGRES_CONN_ID,
-        sql='/opt/airflow/infra/init-scripts/01_create_schemas.sql',
-    )
-
-    create_extensions_task = PostgresOperator(
-        task_id='create_extensions',
-        postgres_conn_id=POSTGRES_CONN_ID,
-        sql='/opt/airflow/infra/init-scripts/02_create_extensions.sql',
-    )
-
-    # -------------------------
-    # 3. DATA INGESTION
-    # -------------------------
-    def _run_data_ingestion(**context):
-        """Run ingestion code."""
-        logger.info("Starting data ingestion process...")
-        if ShopZadaIngestion is None:
-            raise ImportError("ShopZadaIngestion class not importable")
-
-        ingestion = ShopZadaIngestion()
-        results = ingestion.run_all_ingestions(DATA_DIR)
-
-        successful = sum(1 for result in results.values() if result)
-        total = len(results)
-        logger.info("Ingestion completed: %s/%s successful", successful, total)
-
-        if successful < total:
-            failed_sources = [k for k, v in results.items() if not v]
-            logger.warning("Failed sources: %s", failed_sources)
-        
-        return results
-
-    ingest_data_task = PythonOperator(
+    # 3. Core ETL tasks
+    ingest_data = PythonOperator(
         task_id='ingest_source_data',
-        python_callable=_run_data_ingestion,
-        provide_context=True
+        python_callable=run_data_ingestion,
+        op_kwargs={'data_dir': DATA_DIR},
     )
 
-    # -------------------------
-    # 4. STAGING TRANSFORMATIONS
-    # -------------------------
-    staging_transform_task = PostgresOperator(
+    staging_transform = PostgresOperator(
         task_id='staging_transformations',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/staging/load_staging.sql',
     )
 
-    # -------------------------
-    # 5. DIMENSIONS
-    # -------------------------
-    load_dim_date_task = PostgresOperator(
+    # 4. Warehouse Dimension and Fact Loading
+    load_dim_date = PostgresOperator(
         task_id='load_dim_date',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/dim_date.sql',
     )
 
-    load_dim_customer_task = PostgresOperator(
+    load_dim_customer = PostgresOperator(
         task_id='load_dim_customer',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/dim_customer.sql',
     )
 
-    load_dim_product_task = PostgresOperator(
+    load_dim_product = PostgresOperator(
         task_id='load_dim_product',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/dim_product.sql',
     )
 
-    load_dim_merchant_task = PostgresOperator(
+    load_dim_merchant = PostgresOperator(
         task_id='load_dim_merchant',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/dim_merchant.sql',
     )
 
-    load_dim_campaign_task = PostgresOperator(
+    load_dim_campaign = PostgresOperator(
         task_id='load_dim_campaign',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/dim_campaign.sql',
     )
 
-    # -------------------------
-    # 6. FACTS
-    # -------------------------
-    load_fact_orders_task = PostgresOperator(
+    load_fact_orders = PostgresOperator(
         task_id='load_fact_orders',
         postgres_conn_id=POSTGRES_CONN_ID,
         sql='/opt/airflow/scripts/transform/warehouse/fact_orders.sql',
     )
-
-    # -------------------------
-    # 7. DATA QUALITY
-    # -------------------------
-    def _run_data_quality_checks(**context):
-        logger.info("Starting data quality validation...")
-        try:
-            from quality.dq_checks import DataQualityChecker
-        except Exception as e:
-            logger.exception("quality.dq_checks import failed: %s", e)
-            raise
-
-        checker = DataQualityChecker()
-        checker.connect()
-        success = checker.run_all_checks()
-        report = checker.generate_report()
-        logger.info("Data Quality Report:\n%s", report)
-        checker.disconnect()
-
-        if not success:
-            raise Exception("Data quality checks failed")
-        logger.info("✓ All data quality checks passed")
-        return True
-
-    data_quality_task = PythonOperator(
-        task_id='data_quality_validation',
-        python_callable=_run_data_quality_checks,
-        provide_context=True
-    )
-
-    # -------------------------
-    # 8. PRESENTATION REFRESH
-    # -------------------------
-    refresh_presentation_task = PostgresOperator(
-        task_id='refresh_presentation_layer',
-        postgres_conn_id=POSTGRES_CONN_ID,
-        sql="""
-        SELECT presentation.refresh_daily_sales_agg();
-        SELECT 'Presentation layer refresh completed at ' || NOW() as message;
-        """,
-    )
-
-    # -------------------------
-    # 9. METRICS & LOGGING
-    # -------------------------
-    def _collect_pipeline_metrics(**context):
-        logger.info("Collecting pipeline execution metrics...")
-        try:
-            pg = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-            conn = pg.get_conn()
-            cur = conn.cursor()
-        except Exception as e:
-            logger.exception("Unable to connect to Postgres: %s", e)
-            return False
-
-        metrics_queries = {
-            'total_customers': 'SELECT COUNT(*) FROM warehouse.dim_customer',
-            'total_products': 'SELECT COUNT(*) FROM warehouse.dim_product',
-            'total_orders': 'SELECT COUNT(*) FROM warehouse.fact_orders',
-            'total_revenue': 'SELECT SUM(net_amount) FROM warehouse.fact_orders',
-        }
-
-        for metric_name, query in metrics_queries.items():
-            try:
-                cur.execute(query)
-                result = cur.fetchone()[0]
-                logger.info("%s: %s", metric_name, result)
-            except Exception as e:
-                logger.warning("Could not collect %s: %s", metric_name, e)
-
-        cur.close()
-        conn.close()
-        logger.info("Pipeline metrics collection completed")
-        return True
-
-    pipeline_metrics_task = PythonOperator(
-        task_id='collect_pipeline_metrics',
-        python_callable=_collect_pipeline_metrics,
-        provide_context=True,
-        trigger_rule=TriggerRule.ALL_SUCCESS
-    )
-
-    # -------------------------
-    # 10. NOTIFICATIONS
-    # -------------------------
-    def _send_success_notification(**context):
-        logger.info("🎉 ShopZada DWH Pipeline completed successfully!")
-        return "Pipeline successful"
-
-    def _send_failure_notification(**context):
-        logger.error("❌ ShopZada DWH Pipeline failed!")
-        return "Pipeline failed"
-
-    success_notification_task = PythonOperator(
-        task_id='success_notification',
-        python_callable=_send_success_notification,
-        trigger_rule=TriggerRule.ALL_SUCCESS
-    )
-
-    failure_notification_task = PythonOperator(
-        task_id='failure_notification',
-        python_callable=_send_failure_notification,
-        trigger_rule=TriggerRule.ONE_FAILED
-    )
-
-    # -------------------------
-    # ORCHESTRATION - SIMPLIFIED
-    # -------------------------
-
-    # Start -> validate -> create schemas -> create staging tables -> ingest -> transform staging
-    start_pipeline >> validate_env_task >> [init_schemas_task, create_extensions_task] >> create_staging_tables_task >> ingest_data_task >> staging_transform_task
-
-    # Parallel dimension loads after staging transformations
-    staging_transform_task >> [load_dim_date_task, load_dim_customer_task, load_dim_product_task]
-
-    # Dependent dimensions
-    load_dim_customer_task >> load_dim_merchant_task
-    load_dim_date_task >> load_dim_campaign_task
-
-    # Facts after dimensions
-    [load_dim_merchant_task, load_dim_campaign_task, load_dim_product_task] >> load_fact_orders_task
-
-    # Quality -> presentation -> metrics -> success
-    load_fact_orders_task >> data_quality_task >> refresh_presentation_task >> pipeline_metrics_task >> success_notification_task >> end_pipeline
-
-    # Failure handling
-    [validate_env_task, create_staging_tables_task, ingest_data_task, staging_transform_task,
-     load_fact_orders_task, data_quality_task, refresh_presentation_task] >> failure_notification_task
-
-    dag.doc_md = """
-    ### ShopZada DWH ETL Pipeline (Fixed v2)
     
-    Key improvements:
-    - Fixed file sensor orchestration with gateway task
-    - Proper ALL_DONE trigger rules
-    - Simplified failure handling
-    - Better dependency management
-    """
+    # 5. Quality, Metrics and Notifications
+    data_quality_checks = PythonOperator(
+        task_id='data_quality_validation',
+        python_callable=run_data_quality_checks,
+    )
+
+    collect_metrics = PythonOperator(
+        task_id='collect_pipeline_metrics',
+        python_callable=collect_pipeline_metrics,
+        op_kwargs={'postgres_conn_id': POSTGRES_CONN_ID},
+        trigger_rule=TriggerRule.ALL_SUCCESS,
+    )
+    
+    end_pipeline = EmptyOperator(task_id='end', trigger_rule=TriggerRule.NONE_FAILED)
+
+    success_notification = PythonOperator(
+        task_id='success_notification',
+        python_callable=send_success_notification,
+        trigger_rule=TriggerRule.ALL_SUCCESS,
+    )
+
+    # 6. Failure Handling Path
+    failure_notification = PythonOperator(
+        task_id='failure_notification',
+        python_callable=send_failure_notification,
+        trigger_rule=TriggerRule.ONE_FAILED,
+    )
+    
+    cleanup_on_failure_task = PythonOperator(
+        task_id='cleanup_on_failure',
+        python_callable=cleanup_on_failure,
+        op_kwargs={'postgres_conn_id': POSTGRES_CONN_ID},
+        trigger_rule=TriggerRule.ONE_FAILED,
+    )
+
+    # --- Task Dependencies ---
+    start_pipeline >> validate_env
+    validate_env >> [wait_for_data_files, init_schemas, create_extensions]
+    [init_schemas, create_extensions, wait_for_data_files] >> create_staging_tables
+
+    create_staging_tables >> ingest_data >> staging_transform
+
+    staging_transform >> [load_dim_date, load_dim_customer, load_dim_product]
+
+    # Set up dependencies for merchant and campaign dimensions
+    for upstream in [load_dim_date, load_dim_customer, load_dim_product]:
+        upstream >> load_dim_merchant
+        upstream >> load_dim_campaign
+
+    [load_dim_merchant, load_dim_campaign] >> load_fact_orders
+
+    load_fact_orders >> data_quality_checks
+
+    data_quality_checks >> collect_metrics >> success_notification >> end_pipeline
+
+    # Define failure path
+    [validate_env, wait_for_data_files, create_staging_tables, ingest_data, staging_transform, load_fact_orders, data_quality_checks] >> cleanup_on_failure_task >> failure_notification >> end_pipeline
+
+# Instantiate the DAG
+shopzada_pipeline_dag = shopzada_pipeline()

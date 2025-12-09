@@ -1,11 +1,20 @@
 INSERT INTO warehouse.dim_product (product_id, product_name, product_type, price)
-SELECT DISTINCT
+SELECT
     product_id,
     product_name,
     product_type,
     price
-FROM staging.staging_business_products
-WHERE product_id IS NOT NULL
+FROM (
+    SELECT DISTINCT
+        CAST(SUBSTRING(product_id FROM 'PRODUCT([0-9]+)') AS INTEGER) as product_id,
+        product_name,
+        product_type,
+        price,
+        ROW_NUMBER() OVER (PARTITION BY CAST(SUBSTRING(product_id FROM 'PRODUCT([0-9]+)') AS INTEGER) ORDER BY product_id) as rn
+    FROM staging.staging_business_products
+    WHERE product_id IS NOT NULL
+) deduped
+WHERE rn = 1
 ON CONFLICT (product_id) DO UPDATE SET
     product_name = EXCLUDED.product_name,
     product_type = EXCLUDED.product_type,

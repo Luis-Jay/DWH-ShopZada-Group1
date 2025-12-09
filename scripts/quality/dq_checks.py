@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class DataQualityChecker:
     def __init__(self):
         self.db_config = {
-            'host': os.getenv('DB_HOST', 'localhost'),
+            'host': os.getenv('DB_HOST', 'postgres'),  # Match ingestion script default
             'port': os.getenv('DB_PORT', '5432'),
             'database': os.getenv('DB_NAME', 'shopzada_dwh'),
             'user': os.getenv('DB_USER', 'shopzada'),
@@ -66,10 +66,10 @@ class DataQualityChecker:
         self.issues.append(issue)
         logger.warning(f"[{severity}] {check_name}: {description}")
 
-    def run_query(self, query, description=""):
+    def run_query(self, query, description="", params=None):
         """Execute a query and return results"""
         try:
-            self.cursor.execute(query)
+            self.cursor.execute(query, params or ())
             if query.strip().upper().startswith('SELECT'):
                 return self.cursor.fetchall()
             else:
@@ -87,7 +87,7 @@ class DataQualityChecker:
             WHERE table_schema = %s AND table_name = %s
         );
         """
-        result = self.run_query(query, f"Check table {schema}.{table} exists")
+        result = self.run_query(query, f"Check table {schema}.{table} exists", params=(schema, table))
         return result and result[0]['exists']
 
     def check_row_count(self, schema, table, min_rows=1):
@@ -187,7 +187,7 @@ class DataQualityChecker:
                 'name': 'Negative Amounts',
                 'query': """
                 SELECT COUNT(*) as negative_count
-                FROM warehouse.fact_sales
+                FROM warehouse.fact_orders
                 WHERE net_amount < 0;
                 """,
                 'severity': 'HIGH',
@@ -197,7 +197,7 @@ class DataQualityChecker:
                 'name': 'Future Order Dates',
                 'query': f"""
                 SELECT COUNT(*) as future_count
-                FROM warehouse.fact_sales fo
+                FROM warehouse.fact_orders fo
                 JOIN warehouse.dim_date dd ON fo.order_date_key = dd.date_key
                 WHERE dd.full_date > CURRENT_DATE;
                 """,
@@ -208,7 +208,7 @@ class DataQualityChecker:
                 'name': 'Zero Quantity Orders',
                 'query': """
                 SELECT COUNT(*) as zero_quantity_count
-                FROM warehouse.fact_sales
+                FROM warehouse.fact_orders
                 WHERE quantity <= 0;
                 """,
                 'severity': 'HIGH',
@@ -239,7 +239,7 @@ class DataQualityChecker:
         # Check if warehouse tables exist
         warehouse_tables = [
             'dim_customer', 'dim_product', 'dim_merchant', 'dim_staff',
-            'dim_campaign', 'dim_date', 'fact_sales'
+            'dim_campaign', 'dim_date', 'fact_orders'
         ]
 
         for table in warehouse_tables:
@@ -273,12 +273,13 @@ class DataQualityChecker:
 
         # Fact table foreign key checks
         fk_checks = [
-            ('warehouse.fact_sales', 'customer_key', 'warehouse.dim_customer', 'customer_key'),
-            ('warehouse.fact_sales', 'product_key', 'warehouse.dim_product', 'product_key'),
-            ('warehouse.fact_sales', 'merchant_key', 'warehouse.dim_merchant', 'merchant_key'),
-            ('warehouse.fact_sales', 'staff_key', 'warehouse.dim_staff', 'staff_key'),
-            ('warehouse.fact_sales', 'campaign_key', 'warehouse.dim_campaign', 'campaign_key'),
-            ('warehouse.fact_sales', 'order_date_key', 'warehouse.dim_date', 'date_key')
+            ('warehouse.fact_orders', 'customer_key', 'warehouse.dim_customer', 'customer_key'),
+            ('warehouse.fact_orders', 'product_key', 'warehouse.dim_product', 'product_key'),
+            ('warehouse.fact_orders', 'merchant_key', 'warehouse.dim_merchant', 'merchant_key'),
+            ('warehouse.fact_orders', 'staff_key', 'warehouse.dim_staff', 'staff_key'),
+            ('warehouse.fact_orders', 'campaign_key', 'warehouse.dim_campaign', 'campaign_key'),
+            ('warehouse.fact_orders', 'order_date_key', 'warehouse.dim_date', 'date_key'),
+            ('warehouse.fact_orders', 'estimated_arrival_key', 'warehouse.dim_date', 'date_key')
         ]
 
         for fact_table, fact_key, dim_table, dim_key in fk_checks:

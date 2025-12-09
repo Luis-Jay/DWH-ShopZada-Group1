@@ -22,7 +22,7 @@ SELECT
         WHEN dd.is_holiday THEN 'Holiday'
         ELSE 'Regular'
     END as date_category
-FROM warehouse.fact_sales fo
+FROM warehouse.fact_orders fo
 JOIN warehouse.dim_date dd ON fo.order_date_key = dd.date_key
 GROUP BY
     dd.full_date, dd.year, dd.month, dd.month_name, dd.quarter,

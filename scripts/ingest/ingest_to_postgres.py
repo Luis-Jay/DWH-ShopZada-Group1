@@ -10,7 +10,7 @@ import json
 class ShopZadaIngestion:
     def __init__(self):
         self.db_config = {
-            'host': os.getenv('DB_HOST', 'localhost'),
+            'host': os.getenv('DB_HOST', 'postgres'),  # Default to Docker service name
             'port': os.getenv('DB_PORT', '5432'),
             'database': os.getenv('DB_NAME', 'shopzada_dwh'),
             'user': os.getenv('DB_USER', 'shopzada'),
@@ -112,8 +112,8 @@ class ShopZadaIngestion:
         file_path = os.path.join(base_path, 'Customer Management Department', 'user_data.json')
         if os.path.exists(file_path):
             df = self.load_json(file_path)
-            # Fix transposed structure
-            df.columns = ['user_id', 'registration_date', 'name', 'street', 'state', 'country']
+            # Set proper column names for the transposed JSON data
+            df.columns = [f'field_{i}' for i in range(len(df.columns))]
             results.append(self.ingest_dataframe(df, 'staging_customer_profiles'))
 
         # Jobs
@@ -166,6 +166,8 @@ class ShopZadaIngestion:
             if len(df.columns) == 1:
                 # Split the single column by tabs
                 df = df.iloc[:, 0].str.split('\t', expand=True)
+                # After splitting, we might have an empty first column due to leading tab
+                df = df.iloc[:, 1:]  # Skip the first empty column
                 df.columns = ['campaign_id', 'campaign_name', 'campaign_description', 'discount']
             results.append(self.ingest_dataframe(df, 'staging_marketing_campaigns'))
 

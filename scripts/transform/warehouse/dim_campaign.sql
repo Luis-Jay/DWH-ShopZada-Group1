@@ -2,7 +2,7 @@
 
 INSERT INTO warehouse.dim_campaign (campaign_id, campaign_name, campaign_description, discount)
 SELECT DISTINCT
-    campaign_id,
+    CAST(SUBSTRING(campaign_id FROM 'CAMPAIGN([0-9]+)') AS INTEGER) as campaign_id,
     campaign_name,
     campaign_description,
     discount

@@ -104,6 +104,6 @@ CREATE TABLE IF NOT EXISTS warehouse.fact_campaign_performance (
 );
 
 -- Indexes for performance
-CREATE INDEX idx_fact_sales_order_date ON warehouse.fact_sales(order_date_key);
-CREATE INDEX idx_fact_sales_customer ON warehouse.fact_sales(customer_key);
-CREATE INDEX idx_fact_campaign_perf_campaign ON warehouse.fact_campaign_performance(campaign_key);
+CREATE INDEX IF NOT EXISTS idx_fact_sales_order_date ON warehouse.fact_sales(order_date_key);
+CREATE INDEX IF NOT EXISTS idx_fact_sales_customer ON warehouse.fact_sales(customer_key);
+CREATE INDEX IF NOT EXISTS idx_fact_campaign_perf_campaign ON warehouse.fact_campaign_performance(campaign_key);

@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: shopzada
       POSTGRES_PASSWORD: shopzada123
       POSTGRES_DB: shopzada_dwh
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
@@ -50,7 +52,8 @@ services:
       AIRFLOW__CORE__FERNET_KEY: viIbsSqYPaHYwIHAKudJEavu_11AseOvv7I96oTXm2I=
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
-      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://shopzada:shopzada123@postgres/shopzada_dwh
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql://shopzada:shopzada123@postgres:5432/shopzada_dwh
+      AIRFLOW__CORE__TEMPLATE_SEARCHPATH: /opt/airflow/dags,/opt/airflow/plugins,/opt/airflow
 
       # FIXED BASE URL (used for external access from host)
       AIRFLOW__WEBSERVER__BASE_URL: http://airflow-webserver:8080
@@ -76,6 +79,7 @@ services:
       - ../workflows/airflow_dags:/opt/airflow/dags
       - ../scripts:/opt/airflow/scripts
       - ../sql:/opt/airflow/sql
+      - ../Project Dataset:/opt/airflow/sql/Project Dataset
       - ./:/opt/airflow/infra
       - ./requirements.txt:/requirements.txt
       - airflow_logs:/opt/airflow/logs
@@ -105,7 +109,8 @@ services:
       AIRFLOW__CORE__FERNET_KEY: viIbsSqYPaHYwIHAKudJEavu_11AseOvv7I96oTXm2I=
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
-      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://shopzada:shopzada123@postgres/shopzada_dwh
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql://shopzada:shopzada123@postgres:5432/shopzada_dwh
+      AIRFLOW__CORE__TEMPLATE_SEARCHPATH: /opt/airflow/dags,/opt/airflow/plugins,/opt/airflow
 
       # Must match webserver for log URLs
       AIRFLOW__WEBSERVER__BASE_URL: http://airflow-webserver:8080
@@ -121,6 +126,7 @@ services:
       - ../workflows/airflow_dags:/opt/airflow/dags
       - ../scripts:/opt/airflow/scripts
       - ../sql:/opt/airflow/sql
+      - ../Project Dataset:/opt/airflow/sql/Project Dataset
       - ./:/opt/airflow/infra
       - ./requirements.txt:/requirements.txt
       - airflow_logs:/opt/airflow/logs

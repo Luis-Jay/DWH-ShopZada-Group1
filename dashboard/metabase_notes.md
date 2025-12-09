@@ -4,9 +4,34 @@
 This document provides step-by-step instructions for setting up the ShopZada analytics dashboard using Metabase. The dashboard includes three primary cards that answer key business questions about campaign performance, customer segmentation, and sales trends.
 
 ## Prerequisites
-- Docker Compose infrastructure running
+- Docker Compose infrastructure running (including Metabase service)
 - PostgreSQL database populated with transformed data
 - Metabase accessible at http://localhost:3000
+
+## Getting Started with Metabase
+
+### Check if Metabase is Running
+1. Verify Docker containers are running:
+   ```bash
+   docker ps | grep metabase
+   ```
+
+2. If Metabase isn't running, start it:
+   ```bash
+   docker-compose up -d metabase
+   ```
+
+3. Wait 1-2 minutes for Metabase to fully initialize
+
+### First-Time Setup
+1. Open http://localhost:3000 in your browser
+2. You'll be prompted to create an admin account:
+   - **Email**: admin@shopzada.com
+   - **Password**: admin123
+   - **Company/Organization**: ShopZada
+   - **Department**: Data Team (optional)
+
+3. Click "Next" and complete the setup wizard
 
 ## Database Connection Setup
 
@@ -38,6 +63,23 @@ This document provides step-by-step instructions for setting up the ShopZada ana
    - `warehouse` (star schema dimensions and facts)
    - `presentation` (views and aggregations)
 
+## Quick Start Dashboard Creation
+
+### Step-by-Step Dashboard Setup
+1. **Create New Dashboard**: Click "New" → "Dashboard" → Name it "ShopZada Analytics"
+2. **Add First Card - Campaign Performance**:
+   - Click "Add a question" → "Native query"
+   - Copy the campaign effectiveness query (using presentation view)
+   - Save question as "Campaign Performance"
+   - Visualize as bar chart
+3. **Add Second Card - Customer Segments**:
+   - Add another question with customer segments query
+   - Visualize as pie chart
+4. **Add Third Card - Sales Trends**:
+   - Add question with sales trends query
+   - Visualize as line chart
+5. **Arrange Dashboard**: Drag cards into desired layout
+
 ## Dashboard Cards Setup
 
 ### Card 1: Campaign Performance Leaderboard
@@ -46,17 +88,29 @@ This document provides step-by-step instructions for setting up the ShopZada ana
 
 **Visualization Type**: Bar Chart
 
-**SQL Query**:
+**SQL Query** (using presentation view):
+```sql
+SELECT
+    campaign_name,
+    total_orders,
+    total_revenue,
+    avail_rate
+FROM presentation.view_campaign_effectiveness
+ORDER BY total_revenue DESC
+LIMIT 10;
+```
+
+**Alternative SQL Query** (direct warehouse query):
 ```sql
 SELECT
     c.campaign_name,
     COUNT(DISTINCT fcp.order_id) as total_orders,
-    SUM(fs.net_amount) as total_revenue,
-    ROUND(AVG(fs.net_amount), 2) as avg_order_value,
+    SUM(fs.gross_amount) as total_revenue,
+    ROUND(AVG(fs.gross_amount), 2) as avg_order_value,
     ROUND(100.0 * SUM(CASE WHEN fcp.availed THEN 1 ELSE 0 END) / COUNT(*), 2) as avail_rate
 FROM warehouse.fact_campaign_performance fcp
 JOIN warehouse.dim_campaign c ON fcp.campaign_key = c.campaign_key
-LEFT JOIN warehouse.fact_sales fs ON fcp.order_id = fs.order_id
+LEFT JOIN warehouse.fact_orders fs ON fcp.order_id::VARCHAR = fs.order_id
 WHERE c.is_current = true
 GROUP BY c.campaign_name
 ORDER BY total_revenue DESC
@@ -75,15 +129,28 @@ LIMIT 10;
 
 **Visualization Type**: Pie Chart
 
-**SQL Query**:
+**SQL Query** (using presentation view - recommended):
+```sql
+SELECT
+    job_level,
+    customer_count,
+    total_orders,
+    total_revenue,
+    avg_order_value,
+    revenue_percentage
+FROM presentation.view_customer_segments
+ORDER BY total_revenue DESC;
+```
+
+**Alternative SQL Query** (direct warehouse query):
 ```sql
 SELECT
     dc.job_level,
-    SUM(fo.net_amount) as total_revenue,
+    SUM(fo.gross_amount) as total_revenue,
     COUNT(DISTINCT fo.customer_key) as customer_count,
-    ROUND(AVG(fo.net_amount), 2) as avg_order_value,
-    ROUND(100.0 * SUM(fo.net_amount) / SUM(SUM(fo.net_amount)) OVER (), 2) as revenue_percentage
-FROM warehouse.fact_sales fo
+    ROUND(AVG(fo.gross_amount), 2) as avg_order_value,
+    ROUND(100.0 * SUM(fo.gross_amount) / SUM(SUM(fo.gross_amount)) OVER (), 2) as revenue_percentage
+FROM warehouse.fact_orders fo
 JOIN warehouse.dim_customer dc ON fo.customer_key = dc.customer_key
 WHERE dc.is_current = true
 GROUP BY dc.job_level
