@@ -34,7 +34,27 @@ class ShopZadaIngestion:
         """Load JSON file"""
         with open(file_path, 'r') as f:
             data = json.load(f)
-        return pd.DataFrame(data).T.reset_index(drop=True)  # Handle transposed JSON
+        
+        # Check the structure of the JSON
+        if isinstance(data, dict):
+            # If it's a dict, convert to DataFrame
+            # Check if it needs transposition by examining structure
+            df = pd.DataFrame(data)
+            
+            # If we have more columns than rows, it's likely transposed
+            # But we need to check if the first key looks like a column name
+            first_key = list(data.keys())[0]
+            
+            # If keys look like column names (not numeric), don't transpose
+            if not str(first_key).isdigit():
+                return df
+            else:
+                # Keys are numeric indices, transpose
+                return df.T
+        elif isinstance(data, list):
+            return pd.DataFrame(data)
+        else:
+            return pd.DataFrame(data)
 
     def load_html_table(self, file_path):
         """Load HTML table"""
@@ -112,8 +132,13 @@ class ShopZadaIngestion:
         file_path = os.path.join(base_path, 'Customer Management Department', 'user_data.json')
         if os.path.exists(file_path):
             df = self.load_json(file_path)
-            # Set proper column names for the transposed JSON data
-            df.columns = [f'field_{i}' for i in range(len(df.columns))]
+            # Remove this line - let the JSON keep its original column names
+            # df.columns = [f'field_{i}' for i in range(len(df.columns))]
+            # Drop columns that don't exist in the target table
+            columns_to_drop = ['creation_date', 'city', 'birthdate', 'gender', 'device_address', 'user_type']
+            existing_columns_to_drop = [col for col in columns_to_drop if col in df.columns]
+            if existing_columns_to_drop:
+                df = df.drop(columns=existing_columns_to_drop)
             results.append(self.ingest_dataframe(df, 'staging_customer_profiles'))
 
         # Jobs
@@ -207,14 +232,15 @@ class ShopZadaIngestion:
                 df = self.load_file(file_path)
                 results.append(self.ingest_dataframe(df, 'staging_operations_line_items_products'))
 
-        # Order headers - multiple files
+        # Order headers - multiple files  ← UNINDENT THIS SECTION
         order_files = [
             'order_data_20200101-20200701.parquet',
             'order_data_20200701-20211001.pickle',
             'order_data_20211001-20220101.csv',
             'order_data_20220101-20221201.xlsx',
             'order_data_20221201-20230601.json',
-            'order_data_20230601-20240101.html'
+            'order_data_20230601-20240101.html',
+            'order_data_20240101-20241031.parquet'
         ]
         for filename in order_files:
             file_path = os.path.join(base_path, 'Operations Department', filename)
@@ -222,9 +248,22 @@ class ShopZadaIngestion:
                 df = self.load_file(file_path)
                 # Handle JSON structure
                 if filename.endswith('.json'):
-                    # JSON is 4 rows x many columns, transpose to columns
-                    df = df.T.reset_index(drop=True)
-                    df.columns = ['order_id', 'user_id', 'estimated_arrival', 'transaction_date']
+                    # Check if we need to transpose based on actual structure
+                    expected_columns = ['order_id', 'user_id', 'estimated_arrival', 'transaction_date']
+                    if len(df.columns) != len(expected_columns) or not all(col in df.columns for col in expected_columns):
+                        # If structure doesn't match expectations, try to identify columns or skip special handling
+                        print(f"Warning: JSON file {filename} has unexpected structure. Using default column handling.")
+                    else:
+                        # JSON is 4 rows x many columns, transpose to columns
+                        df = df.T.reset_index(drop=True)
+                        df.columns = expected_columns
+                # Ensure only expected columns for order headers (drop unnamed columns)
+                expected_columns = ['order_id', 'user_id', 'estimated_arrival', 'transaction_date']
+                df = df[[col for col in df.columns if col in expected_columns or not col.startswith('unnamed')]]
+                # Keep only the expected columns if they exist
+                existing_expected = [col for col in expected_columns if col in df.columns]
+                if existing_expected:
+                    df = df[existing_expected]
                 results.append(self.ingest_dataframe(df, 'staging_operations_order_headers'))
 
         # Delivery delays

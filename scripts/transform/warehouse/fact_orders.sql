@@ -1,6 +1,6 @@
--- Build/refresh the fact_orders table that powers downstream analytics.
--- The script assumes the staging layer already contains cleansed enterprise
--- order data and that dimension tables hold the latest surrogate keys.
+-- ============================================================
+-- FACT: fact_orders (ORDER-LEVEL GRAIN)
+-- ============================================================
 
 CREATE TABLE IF NOT EXISTS warehouse.fact_orders (
     order_id                VARCHAR(100) PRIMARY KEY,
@@ -24,76 +24,123 @@ CREATE TABLE IF NOT EXISTS warehouse.fact_orders (
     updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-WITH source_orders AS (
+WITH
+-- ------------------------------------------------------------
+-- 1. PRE-AGGREGATE LINE ITEMS (CRITICAL FIX)
+-- ------------------------------------------------------------
+product_items AS (
+    SELECT
+        order_id,
+        MIN(product_id) AS product_id,   -- representative product (order grain)
+        SUM(
+            CAST(
+                NULLIF(REGEXP_REPLACE(quantity, '[^0-9]', '', 'g'), '')
+                AS INT
+            )
+        ) AS total_quantity
+    FROM staging.staging_operations_line_items_products
+    GROUP BY order_id
+),
+price_items AS (
+    SELECT
+        order_id,
+        AVG(price) AS avg_unit_price
+    FROM staging.staging_operations_line_items_prices
+    GROUP BY order_id
+),
+
+-- ------------------------------------------------------------
+-- 2. SOURCE ORDERS (SAFE 1:1 JOINS ONLY)
+-- ------------------------------------------------------------
+source_orders AS (
     SELECT
         oh.order_id,
         oh.transaction_date AS order_date,
-        oh.user_id AS customer_id,
-        lip.product_id,
+        oh.user_id           AS customer_id,
+        pi.product_id,
         eo.merchant_id,
         eo.staff_id,
-        CAST(REGEXP_REPLACE(lipr.quantity, '[^0-9.]', '', 'g') AS INTEGER) AS quantity,
-        lipr.price AS unit_price,   -- ✅ FIXED
-        0 AS discount,
+        COALESCE(pi.total_quantity, 1) AS quantity,
+        COALESCE(pr.avg_unit_price, 0) AS unit_price,
+        0::NUMERIC                       AS discount,
         mt.campaign_id,
-        mt.availed::BOOLEAN AS availed,
+        mt.availed::BOOLEAN             AS availed,
         CASE
             WHEN oh.estimated_arrival ~ '^[0-9]+days$' THEN
-                oh.transaction_date + (CAST(SUBSTRING(oh.estimated_arrival FROM '([0-9]+)days') AS INTEGER) || ' days')::INTERVAL
+                oh.transaction_date +
+                (SUBSTRING(oh.estimated_arrival FROM '([0-9]+)') || ' days')::INTERVAL
             WHEN oh.estimated_arrival ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
-                CAST(oh.estimated_arrival AS DATE)
+                oh.estimated_arrival::DATE
             ELSE NULL
         END AS estimated_arrival_date,
         dd.delay_in_days,
         CASE
-            WHEN dd.delay_in_days IS NULL THEN 'Delivered'
-            WHEN dd.delay_in_days = 0 THEN 'Delivered'
+            WHEN dd.delay_in_days IS NULL OR dd.delay_in_days = 0 THEN 'Delivered'
             WHEN dd.delay_in_days > 0 THEN 'Delayed'
             ELSE 'Unknown'
-        END                                                 AS delivery_status,
-        'Standard'                                          AS logistics_provider,
+        END AS delivery_status,
+        'Standard' AS logistics_provider,
         CASE
-            WHEN dd.delay_in_days IS NULL THEN 24
-            WHEN dd.delay_in_days = 0 THEN 24
+            WHEN dd.delay_in_days IS NULL OR dd.delay_in_days = 0 THEN 24
             ELSE 24 + (dd.delay_in_days * 24)
-        END                                                 AS processing_time_hours
-    FROM staging.staging_operations_order_headers          oh
-    LEFT JOIN staging.staging_operations_line_items_products lip ON lip.order_id = oh.order_id
-    LEFT JOIN staging.staging_operations_line_items_prices lipr ON lipr.order_id = oh.order_id
-    LEFT JOIN staging.staging_enterprise_orders             eo ON eo.order_id = oh.order_id
-    LEFT JOIN staging.staging_marketing_transactions        mt ON mt.order_id = oh.order_id
-    LEFT JOIN staging.staging_operations_delivery_delays    dd ON dd.order_id = oh.order_id
+        END AS processing_time_hours
+    FROM staging.staging_operations_order_headers oh
+    LEFT JOIN product_items pi ON pi.order_id = oh.order_id
+    LEFT JOIN price_items   pr ON pr.order_id = oh.order_id
+    LEFT JOIN staging.staging_enterprise_orders eo ON eo.order_id = oh.order_id
+    LEFT JOIN staging.staging_marketing_transactions mt ON mt.order_id = oh.order_id
+    LEFT JOIN staging.staging_operations_delivery_delays dd ON dd.order_id = oh.order_id
 ),
+
+-- ------------------------------------------------------------
+-- 3. RESOLVE DIMENSION KEYS
+-- ------------------------------------------------------------
 resolved_keys AS (
     SELECT
         so.order_id,
-        -- Aggregate quantities and amounts at order level
-        SUM(COALESCE(so.quantity, 1)) AS total_quantity,
-        AVG(COALESCE(so.unit_price, 0)) AS avg_unit_price,
-        SUM(COALESCE(so.quantity, 1) * COALESCE(so.unit_price, 0)::NUMERIC(14,2)) AS gross_amount,
-        SUM((COALESCE(so.quantity, 1) * COALESCE(so.unit_price, 0)::NUMERIC(14,2)) * COALESCE(so.discount, 0)::NUMERIC(6,4)) AS discount_amount,
-        -- Aggregate boolean values appropriately
-        BOOL_OR(so.availed) AS availed,
-        MAX(so.delivery_status) AS delivery_status,
-        MAX(so.logistics_provider) AS logistics_provider,
-        MAX(so.processing_time_hours) AS processing_time_hours,
-        MAX(dc.customer_key) AS customer_key,
-        MAX(dp.product_key) AS product_key,
-        MAX(dm.merchant_key) AS merchant_key,
-        MAX(ds.staff_key) AS staff_key,
-        MAX(camp.campaign_key) AS campaign_key,
-        MAX(od.date_key) AS order_date_key,
-        MAX(ea.date_key) AS estimated_arrival_key
+        so.quantity,
+        so.unit_price,
+        so.quantity * so.unit_price AS gross_amount,
+        0::NUMERIC                  AS discount_amount,
+        so.availed,
+        so.delivery_status,
+        so.logistics_provider,
+        so.processing_time_hours,
+        dc.customer_key,
+        dp.product_key,
+        dm.merchant_key,
+        ds.staff_key,
+        camp.campaign_key,
+        od.date_key AS order_date_key,
+        ea.date_key AS estimated_arrival_key
     FROM source_orders so
-    LEFT JOIN warehouse.dim_customer dc ON dc.customer_id = CAST(SUBSTRING(so.customer_id FROM 'USER([0-9]+)') AS INTEGER) AND dc.is_current
-    LEFT JOIN warehouse.dim_product  dp ON dp.product_id = CAST(SUBSTRING(so.product_id FROM 'PRODUCT([0-9]+)') AS INTEGER) AND dp.is_current
-    LEFT JOIN warehouse.dim_merchant dm ON dm.merchant_id = CAST(SUBSTRING(so.merchant_id FROM 'MERCHANT([0-9]+)') AS INTEGER) AND dm.is_current
-    LEFT JOIN warehouse.dim_staff    ds ON ds.staff_id = CAST(SUBSTRING(so.staff_id FROM 'STAFF([0-9]+)') AS INTEGER) AND ds.is_current
-    LEFT JOIN warehouse.dim_campaign camp ON camp.campaign_id = CAST(SUBSTRING(so.campaign_id FROM 'CAMPAIGN([0-9]+)') AS INTEGER) AND camp.is_current
-    LEFT JOIN warehouse.dim_date od  ON od.full_date = so.order_date
-    LEFT JOIN warehouse.dim_date ea  ON ea.full_date = so.estimated_arrival_date
-    GROUP BY so.order_id
+    LEFT JOIN warehouse.dim_customer dc
+        ON dc.customer_id =
+           CAST(SUBSTRING(so.customer_id FROM 'USER([0-9]+)') AS INT)
+       AND dc.is_current
+    LEFT JOIN warehouse.dim_product dp
+        ON dp.product_id =
+           CAST(SUBSTRING(so.product_id FROM 'PRODUCT([0-9]+)') AS INT)
+       AND dp.is_current
+    LEFT JOIN warehouse.dim_merchant dm
+        ON dm.merchant_id =
+           CAST(SUBSTRING(so.merchant_id FROM 'MERCHANT([0-9]+)') AS INT)
+       AND dm.is_current
+    LEFT JOIN warehouse.dim_staff ds
+        ON ds.staff_id =
+           CAST(SUBSTRING(so.staff_id FROM 'STAFF([0-9]+)') AS INT)
+       AND ds.is_current
+    LEFT JOIN warehouse.dim_campaign camp
+        ON camp.campaign_id =
+           CAST((REGEXP_MATCH(so.campaign_id, '([0-9]+)'))[1] AS INT)
+       AND camp.is_current
+    LEFT JOIN warehouse.dim_date od ON od.full_date = so.order_date
+    LEFT JOIN warehouse.dim_date ea ON ea.full_date = so.estimated_arrival_date
 )
+
+-- ------------------------------------------------------------
+-- 4. UPSERT INTO FACT TABLE
+-- ------------------------------------------------------------
 INSERT INTO warehouse.fact_orders (
     order_id,
     customer_key,
@@ -124,8 +171,8 @@ SELECT
     rk.campaign_key,
     rk.order_date_key,
     rk.estimated_arrival_key,
-    COALESCE(rk.total_quantity, 1),
-    COALESCE(rk.avg_unit_price, 0),
+    rk.quantity,
+    rk.unit_price,
     rk.gross_amount,
     rk.discount_amount,
     rk.gross_amount - rk.discount_amount AS net_amount,
@@ -134,8 +181,8 @@ SELECT
     rk.logistics_provider,
     rk.processing_time_hours,
     CASE
-        WHEN rk.processing_time_hours IS NULL THEN NULL
-        WHEN rk.processing_time_hours <= 48 AND rk.delivery_status ILIKE 'delivered%' THEN TRUE
+        WHEN rk.processing_time_hours <= 48
+         AND rk.delivery_status = 'Delivered' THEN TRUE
         ELSE FALSE
     END AS on_time_delivery,
     CURRENT_TIMESTAMP

@@ -7,7 +7,7 @@ SELECT
     SUM(fs.gross_amount) as total_revenue
 FROM warehouse.fact_campaign_performance fcp
 JOIN warehouse.dim_campaign c ON fcp.campaign_key = c.campaign_key
-LEFT JOIN warehouse.fact_orders fs ON fcp.order_id::VARCHAR = fs.order_id
+LEFT JOIN warehouse.fact_orders fs ON fcp.order_id = fs.order_id
 WHERE c.is_current = true
 GROUP BY c.campaign_name
 ORDER BY total_revenue DESC;

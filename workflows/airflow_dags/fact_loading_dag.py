@@ -7,7 +7,6 @@ This DAG handles the loading of fact tables in the warehouse layer.
 import sys
 import os
 from datetime import datetime, timedelta
-import logging
 
 sys.path.insert(0, os.path.abspath('/opt/airflow/scripts'))
 
@@ -46,12 +45,18 @@ def fact_loading():
     load_fact_orders = PostgresOperator(
         task_id='load_fact_orders',
         postgres_conn_id='postgres_default',
-        sql='transform/warehouse/fact_orders.sql',
+        sql='transform/warehouse/fact_orders_lightning.sql',
+    )
+
+    load_fact_campaign_performance = PostgresOperator(
+        task_id='load_fact_campaign_performance',
+        postgres_conn_id='postgres_default',
+        sql='transform/warehouse/fact_campaign_performance.sql',
     )
 
     end_facts = EmptyOperator(task_id='end_fact_loading')
 
-    # Dependencies
-    start_facts >> load_fact_orders >> end_facts
+    # Dependencies - sequential execution to avoid conflicts
+    start_facts >> load_fact_orders >> load_fact_campaign_performance >> end_facts
 
 fact_loading_dag = fact_loading()

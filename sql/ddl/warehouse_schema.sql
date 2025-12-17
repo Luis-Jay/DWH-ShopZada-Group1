@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS warehouse.fact_operations (
 CREATE TABLE IF NOT EXISTS warehouse.fact_campaign_performance (
     campaign_perf_key SERIAL PRIMARY KEY,
     campaign_key INT REFERENCES warehouse.dim_campaign(campaign_key),
-    order_id INT,
+    order_id VARCHAR(100),  -- Changed to VARCHAR to match fact_orders
     transaction_date_key INT REFERENCES warehouse.dim_date(date_key),
     availed BOOLEAN,
     estimated_arrival DATE,

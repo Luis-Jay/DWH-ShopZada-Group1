@@ -10,7 +10,6 @@ This DAG handles the creation of presentation layer objects:
 import sys
 import os
 from datetime import datetime, timedelta
-import logging
 
 sys.path.insert(0, os.path.abspath('/opt/airflow/scripts'))
 
@@ -82,25 +81,49 @@ def presentation_setup():
         sql='mat_agg_daily_sales.sql',
     )
 
+    create_dashboard_summary_view = PostgresOperator(
+        task_id='create_dashboard_summary_view',
+        postgres_conn_id='postgres_default',
+        sql='view_dashboard_summary.sql',
+    )
+
+    create_orders_dimensions_view = PostgresOperator(
+        task_id='create_orders_dimensions_view',
+        postgres_conn_id='postgres_default',
+        sql='view_orders_with_dimensions.sql',
+    )
+
     end_presentation = EmptyOperator(task_id='end_presentation_setup')
 
-    # Dependencies - create schemas first, then views
+    # Dependencies - create schemas first, then views in dependency order
     start_presentation >> create_warehouse_schema
     start_presentation >> create_presentation_schema
 
+    # First create basic views (no dependencies)
     create_warehouse_schema >> create_customer_segments_view
     create_warehouse_schema >> create_campaign_effectiveness_view
     create_warehouse_schema >> create_merchant_performance_view
     create_warehouse_schema >> create_daily_sales_agg
+    create_warehouse_schema >> create_orders_dimensions_view
 
     create_presentation_schema >> create_customer_segments_view
     create_presentation_schema >> create_campaign_effectiveness_view
     create_presentation_schema >> create_merchant_performance_view
     create_presentation_schema >> create_daily_sales_agg
+    create_presentation_schema >> create_orders_dimensions_view
+
+    # Dashboard summary depends on other views, so create it last
+    create_customer_segments_view >> create_dashboard_summary_view
+    create_campaign_effectiveness_view >> create_dashboard_summary_view
+    create_merchant_performance_view >> create_dashboard_summary_view
+    create_daily_sales_agg >> create_dashboard_summary_view
 
     create_customer_segments_view >> end_presentation
     create_campaign_effectiveness_view >> end_presentation
     create_merchant_performance_view >> end_presentation
     create_daily_sales_agg >> end_presentation
+    create_orders_dimensions_view >> end_presentation
+    create_dashboard_summary_view >> end_presentation
+
 
 presentation_setup_dag = presentation_setup()
